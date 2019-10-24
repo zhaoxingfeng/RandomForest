@@ -1,153 +1,222 @@
-# coding:utf-8
+# -*- coding: utf-8 -*-
 """
-作者：zhaoxingfeng	日期：2017.06.12
-功能：随机森林，Random Forest（RF），wine数据集[1,2]二分类
-版本：1.0
+@Env:Python2.7
+@Time: 2019/10/24 13:31
+@Author: zhaoxingfeng
+@Function：Random Forest（RF），随机森林二分类
+@Version: V1.1
+参考文献：
+[1] UCI. wine[DB/OL].https://archive.ics.uci.edu/ml/machine-learning-databases/wine.
 """
-from __future__ import division
 import pandas as pd
-import copy
+import numpy as np
 import random
 import math
+pd.set_option('precision', 4)
+pd.set_option('display.max_rows', 50)
+pd.set_option('display.width', 1000)
+pd.set_option('display.max_columns', 1000)
+pd.set_option('expand_frame_repr', False)
+import collections
 
-# 最后一个属性还不能将样本完全分开，此时数量最多的label被选为最终类别
-def majorClass(classList):
-    classDict = {}
-    for cls in classList:
-        classDict[cls] = classDict.get(cls, 0) + 1
-    sortClass = sorted(classDict.items(), key=lambda item: item[1])
-    return sortClass[-1][0]
 
-# 计算基尼系数
-def calcGini(dataSet):
-    labelCounts = {}
-    # 给所有可能分类创建字典
-    for dt in dataSet:
-        currentLabel = dt[-1]
-        labelCounts[currentLabel] = labelCounts.get(currentLabel, 0) + 1
-    Gini = 1
-    for key in labelCounts:
-        prob = labelCounts[key] / len(dataSet)
-        Gini -= prob * prob
-    return Gini
+# 定义一棵决策树
+class Tree(object):
+    def __init__(self):
+        self.split_feature = None
+        self.split_value = None
+        self.leaf_value = None
+        self.tree_left = None
+        self.tree_right = None
 
-# 对连续变量划分数据集
-def splitDataSet(dataSet, featIndex, value):
-    leftData, rightData = [], []
-    for dt in dataSet:
-        if dt[featIndex] <= value:
-            leftData.append(dt)
+    # 通过递归决策树找到样本所属叶子节点
+    def calc_predict_value(self, dataset):
+        if self.leaf_value is not None:
+            return self.leaf_value
+        elif dataset[self.split_feature] <= self.split_value:
+            return self.tree_left.calc_predict_value(dataset)
         else:
-            rightData.append(dt)
-    return leftData, rightData
+            return self.tree_right.calc_predict_value(dataset)
 
-# 选择最好的数据集划分方式
-def chooseBestFeature(dataSet):
-    bestGini = 1
-    bestFeatureIndex = -1
-    bestSplitValue = None
-    # 第i个特征
-    for i in range(len(dataSet[0]) - 1):
-        featList = [dt[i] for dt in dataSet]
-        # 产生候选划分点
-        sortfeatList = sorted(list(set(featList)))
-        splitList = []
-        for j in range(len(sortfeatList) - 1):
-            splitList.append((sortfeatList[j] + sortfeatList[j + 1]) / 2)
+    # 以json形式打印决策树，方便查看树结构
+    def describe_tree(self):
+        if not self.tree_left and not self.tree_right:
+            leaf_info = "{leaf_value:" + str(self.leaf_value) + "}"
+            return leaf_info
+        left_info = self.tree_left.describe_tree()
+        right_info = self.tree_right.describe_tree()
+        tree_structure = "{split_feature:" + str(self.split_feature) + \
+                         ",split_value:" + str(self.split_value) + \
+                         ",left_tree:" + left_info + \
+                         ",right_tree:" + right_info + "}"
+        return tree_structure
 
-        # 第j个候选划分点，记录最佳划分点
-        for splitValue in splitList:
-            newGini = 0
-            subDataSet0, subDataSet1 = splitDataSet(dataSet, i, splitValue)
-            newGini += len(subDataSet0) / len(dataSet) * calcGini(subDataSet0)
-            newGini += len(subDataSet1) / len(dataSet) * calcGini(subDataSet1)
-            if newGini < bestGini:
-                bestGini = newGini
-                bestFeatureIndex = i
-                bestSplitValue = splitValue
-    return bestFeatureIndex, bestSplitValue
 
-# 去掉第i个属性，生成新的数据集
-def splitData(dataSet, featIndex, features, value):
-    newFeatures = copy.deepcopy(features)
-    newFeatures.remove(features[featIndex])
-    leftData, rightData = [], []
-    for dt in dataSet:
-        temp = []
-        temp.extend(dt[:featIndex])
-        temp.extend(dt[featIndex + 1:])
-        if dt[featIndex] <= value:
-            leftData.append(temp)
+class RandomForestClassifier(object):
+    def __init__(self, n_estimators=10, max_depth=-1, min_samples_split=2, min_samples_leaf=1,
+                 min_split_gain=0.0, colsample_bytree="sqrt", subsample=1.0, random_state=None):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth if max_depth != -1 else float('inf')
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.min_split_gain = min_split_gain
+        self.colsample_bytree = colsample_bytree  # 列采样
+        self.subsample = subsample  # 行采样
+        self.random_state = random_state
+        self.trees = dict()
+        self.feature_importances_ = dict()
+
+    def fit(self, dataset, targets):
+        assert targets.unique().__len__() == 2, "There must be two class for targets!"
+        targets = targets.to_frame(name='label')
+
+        if self.random_state:
+            random.seed(self.random_state)
+        random_state_stages = random.sample(range(self.n_estimators), self.n_estimators)
+
+        # 两种列采样方式
+        if self.colsample_bytree == "sqrt":
+            self.colsample_bytree = int(len(dataset.columns) ** 0.5)
+        elif self.colsample_bytree == "log2":
+            self.colsample_bytree = int(math.log(len(dataset.columns)))
         else:
-            rightData.append(temp)
-    return newFeatures, leftData, rightData
+            self.colsample_bytree = len(dataset.columns)
 
-# 建立决策树
-def createTree(dataSet, features):
-    classList = [dt[-1] for dt in dataSet]
-    # label一样，全部分到一边
-    if classList.count(classList[0]) == len(classList):
-        return classList[0]
-    # 最后一个特征还不能把所有样本分到一边，则选数量最多的label
-    if len(features) == 1:
-        return majorClass(classList)
-    bestFeatureIndex, bestSplitValue = chooseBestFeature(dataSet)
-    bestFeature = features[bestFeatureIndex]
-    # 生成新的去掉bestFeature特征的数据集
-    newFeatures, leftData, rightData = splitData(dataSet, bestFeatureIndex, features, bestSplitValue)
-    # 左右两颗子树，左边小于等于最佳划分点，右边大于最佳划分点
-    myTree = {bestFeature: {'<' + str(bestSplitValue): {}, '>' + str(bestSplitValue): {}}}
-    myTree[bestFeature]['<' + str(bestSplitValue)] = createTree(leftData, newFeatures)
-    myTree[bestFeature]['>' + str(bestSplitValue)] = createTree(rightData, newFeatures)
-    return myTree
+        for stage in range(self.n_estimators):
+            print(("iter: "+str(stage+1)).center(80, '='))
 
-# 用生成的决策树对测试样本进行分类
-def treeClassify(decisionTree, featureLabel, testDataSet):
-    firstFeature = decisionTree.keys()[0]
-    secondFeatDict = decisionTree[firstFeature]
-    splitValue = float(secondFeatDict.keys()[0][1:])
-    featureIndex = featureLabel.index(firstFeature)
-    if testDataSet[featureIndex] <= splitValue:
-        valueOfFeat = secondFeatDict['<' + str(splitValue)]
-    else:
-        valueOfFeat = secondFeatDict['>' + str(splitValue)]
-    if isinstance(valueOfFeat, dict):
-        pred_label = treeClassify(valueOfFeat, featureLabel, testDataSet)
-    else:
-        pred_label = valueOfFeat
-    return pred_label
+            # bagging方式随机选择样本和特征
+            random.seed(random_state_stages[stage])
+            subset_index = random.sample(range(len(dataset)), int(self.subsample * len(dataset)))
+            subcol_index = random.sample(dataset.columns.tolist(), self.colsample_bytree)
+            dataset_copy = dataset.loc[subset_index, subcol_index].reset_index(drop=True)
+            targets_copy = targets.loc[subset_index, :].reset_index(drop=True)
 
-# 随机抽取样本，样本数量与原训练样本集一样，维度为sqrt(m-1)
-def baggingDataSet(dataSet):
-    n, m = dataSet.shape
-    features = random.sample(dataSet.columns.values[:-1], int(math.sqrt(m - 1)))
-    features.append(dataSet.columns.values[-1])
-    rows = [random.randint(0, n-1) for _ in range(n)]
-    trainData = dataSet.iloc[rows][features]
-    return trainData.values.tolist(), features
+            tree = self._fit(dataset_copy, targets_copy, depth=0)
+            self.trees[stage] = tree
+            print(tree.describe_tree())
 
-def testWine():
-    df = pd.read_csv('wine.txt', header=None)
-    labels = df.columns.values.tolist()
-    df = df[df[labels[-1]] != 3]
-    # 生成多棵决策树，放到一个list里边
-    treeCounts = 10
-    treeList = []
-    for i in range(treeCounts):
-        baggingData, bagginglabels = baggingDataSet(df)
-        decisionTree = createTree(baggingData, bagginglabels)
-        treeList.append(decisionTree)
-    print treeList
-    # 对测试样本分类
-    labelPred = []
-    for tree in treeList:
-        testData = [12, 0.92, 2, 19, 86, 2.42, 2.26, 0.3, 1.43, 2.5, 1.38, 3.12, 278]
-        label = treeClassify(tree, labels[:-1], testData)
-        labelPred.append(label)
-    # 投票选择最终类别
-    labelDict = {}
-    for label in labelPred:
-        labelDict[label] = labelDict.get(label, 0) + 1
-    sortClass = sorted(labelDict.items(), key=lambda item: item[1])
-    print "The predicted label is: {}".format(sortClass[-1][0])
-testWine()
+    # 递归建立决策树
+    def _fit(self, dataset, targets, depth):
+        # 如果该节点的类别全都一样/样本小于分裂所需最小样本数量，则选取出现次数最多的类别。终止分裂
+        if len(targets['label'].unique()) <= 1 or dataset.__len__() <= self.min_samples_split:
+            tree = Tree()
+            tree.leaf_value = self.calc_leaf_value(targets['label'])
+            return tree
+
+        if depth < self.max_depth:
+            best_split_feature, best_split_value, best_split_gain = self.choose_best_feature(dataset, targets)
+            left_dataset, right_dataset, left_targets, right_targets = \
+                self.split_dataset(dataset, targets, best_split_feature, best_split_value)
+
+            tree = Tree()
+            # 如果父节点分裂后，左叶子节点/右叶子节点样本小于设置的叶子节点最小样本数量，则该父节点终止分裂
+            if left_dataset.__len__() <= self.min_samples_leaf or \
+                    right_dataset.__len__() <= self.min_samples_leaf or \
+                    best_split_gain <= self.min_split_gain:
+                tree.leaf_value = self.calc_leaf_value(targets['label'])
+                return tree
+            else:
+                # 如果分裂的时候用到该特征，则该特征的importance加1
+                self.feature_importances_[best_split_feature] = \
+                    self.feature_importances_.get(best_split_feature, 0) + 1
+
+                tree.split_feature = best_split_feature
+                tree.split_value = best_split_value
+                tree.tree_left = self._fit(left_dataset, left_targets, depth+1)
+                tree.tree_right = self._fit(right_dataset, right_targets, depth+1)
+                return tree
+        # 如果树的深度超过预设值，则终止分裂
+        else:
+            tree = Tree()
+            tree.leaf_value = self.calc_leaf_value(targets['label'])
+            return tree
+
+    # 选择最好的数据集划分方式，找到最优分裂特征、分裂阈值、分裂增益
+    def choose_best_feature(self, dataset, targets):
+        best_split_gain = 1
+        best_split_feature = None
+        best_split_value = None
+
+        for feature in dataset.columns:
+            if dataset[feature].unique().__len__() <= 100:
+                unique_values = sorted(dataset[feature].unique().tolist())
+            # 如果该维度特征取值太多，则选择100个百分位值作为待选分裂阈值
+            else:
+                unique_values = np.unique([np.percentile(dataset[feature], x)
+                                           for x in np.linspace(0, 100, 100)])
+
+            # 对可能的分裂阈值求分裂增益，选取增益最大的阈值
+            for split_value in unique_values:
+                left_targets = targets[dataset[feature] <= split_value]
+                right_targets = targets[dataset[feature] > split_value]
+                split_gain = self.calc_gini(left_targets['label'], right_targets['label'])
+
+                if split_gain < best_split_gain:
+                    best_split_feature = feature
+                    best_split_value = split_value
+                    best_split_gain = split_gain
+        return best_split_feature, best_split_value, best_split_gain
+
+    # 选择样本中出现次数最多的类别作为叶子节点取值
+    @staticmethod
+    def calc_leaf_value(targets):
+        label_counts = collections.Counter(targets)
+        major_label = max(zip(label_counts.values(), label_counts.keys()))
+        return major_label[1]
+
+    # 分类树采用基尼指数来选择最优分裂点
+    @staticmethod
+    def calc_gini(left_targets, right_targets):
+        split_gain = 0
+        for targets in [left_targets, right_targets]:
+            gini = 1
+            # 统计每个类别有多少样本，然后计算gini
+            label_counts = collections.Counter(targets)
+            for key in label_counts:
+                prob = label_counts[key] * 1.0 / len(targets)
+                gini -= prob ** 2
+            split_gain += len(targets) * 1.0 / (len(left_targets) + len(right_targets)) * gini
+        return split_gain
+
+    # 根据特征和阈值将样本划分成左右两份，左边小于等于阈值，右边大于阈值
+    @staticmethod
+    def split_dataset(dataset, targets, split_feature, split_value):
+        left_dataset = dataset[dataset[split_feature] <= split_value]
+        left_targets = targets[dataset[split_feature] <= split_value]
+        right_dataset = dataset[dataset[split_feature] > split_value]
+        right_targets = targets[dataset[split_feature] > split_value]
+        return left_dataset, right_dataset, left_targets, right_targets
+
+    # 输入样本，预测所属类别
+    def predict(self, dataset):
+        res = []
+        for index, row in dataset.iterrows():
+            pred_list = []
+            # 统计每棵树的预测结果，选取出现次数最多的结果作为最终类别
+            for stage, tree in self.trees.items():
+                pred_list.append(tree.calc_predict_value(row))
+
+            pred_label_counts = collections.Counter(pred_list)
+            pred_label = max(zip(pred_label_counts.values(), pred_label_counts.keys()))
+            res.append(pred_label[1])
+        return np.array(res)
+
+
+if __name__ == '__main__':
+    df = pd.read_csv("source/wine.txt")
+    df = df[df['label'].isin([1, 2])].sample(frac=1, random_state=66).reset_index(drop=True)
+    clf = RandomForestClassifier(n_estimators=5,
+                                 max_depth=5,
+                                 min_samples_split=6,
+                                 min_samples_leaf=2,
+                                 colsample_bytree="sqrt",
+                                 subsample=0.8,
+                                 random_state=66)
+    train_count = int(0.7 * len(df))
+    clf.fit(df.ix[:train_count, :-1], df.ix[:train_count, 'label'])
+
+    from sklearn import metrics
+    print(metrics.accuracy_score(df.ix[:train_count, 'label'], clf.predict(df.ix[:train_count, :-1])))
+    print(metrics.accuracy_score(df.ix[train_count:, 'label'], clf.predict(df.ix[train_count:, :-1])))
+
