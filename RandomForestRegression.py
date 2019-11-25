@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-@Env:Python2.7
+@Env: Python2.7
 @Time: 2019/10/24 14:22
 @Author: zhaoxingfeng
 @Function：Random Forest（RF），随机森林回归
@@ -12,15 +12,10 @@ import pandas as pd
 import numpy as np
 import random
 import math
-pd.set_option('precision', 4)
-pd.set_option('display.max_rows', 50)
-pd.set_option('display.width', 1000)
-pd.set_option('display.max_columns', 1000)
-pd.set_option('expand_frame_repr', False)
 
 
-# 定义一棵决策树
 class Tree(object):
+    """定义一棵决策树"""
     def __init__(self):
         self.split_feature = None
         self.split_value = None
@@ -28,8 +23,8 @@ class Tree(object):
         self.tree_left = None
         self.tree_right = None
 
-    # 通过递归决策树找到样本所属叶子节点
     def calc_predict_value(self, dataset):
+        """通过递归决策树找到样本所属叶子节点"""
         if self.leaf_value is not None:
             return self.leaf_value
         elif dataset[self.split_feature] <= self.split_value:
@@ -37,8 +32,8 @@ class Tree(object):
         else:
             return self.tree_right.calc_predict_value(dataset)
 
-    # 以json形式打印决策树，方便查看树结构
     def describe_tree(self):
+        """以json形式打印决策树，方便查看树结构"""
         if not self.tree_left and not self.tree_right:
             leaf_info = "{leaf_value:" + str(self.leaf_value) + "}"
             return leaf_info
@@ -53,19 +48,33 @@ class Tree(object):
 
 class RandomForestRegression(object):
     def __init__(self, n_estimators=10, max_depth=-1, min_samples_split=2, min_samples_leaf=1,
-                 min_split_gain=0.0, colsample_bytree="sqrt", subsample=1.0, random_state=None):
+                 min_split_gain=0.0, colsample_bytree=None, subsample=0.8, random_state=None):
+        """
+        随机森林参数
+        ----------
+        n_estimators:      树数量
+        max_depth:         树深度，-1表示不限制深度
+        min_samples_split: 节点分裂所需的最小样本数量，小于该值节点终止分裂
+        min_samples_leaf:  叶子节点最少样本数量，小于该值叶子被合并
+        min_split_gain:    分裂所需的最小增益，小于该值节点终止分裂
+        colsample_bytree:  bagging列采样设置，可取[sqrt、log2]。sqrt表示随机选择sqrt(n_features)个特征，
+                           log2表示随机选择log(n_features)个特征，设置为其他则不进行列采样
+        subsample:         行采样比例
+        random_state:      随机种子，设置之后每次生成的n_estimators个样本集不会变，确保实验可重复
+        """
         self.n_estimators = n_estimators
         self.max_depth = max_depth if max_depth != -1 else float('inf')
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.min_split_gain = min_split_gain
-        self.colsample_bytree = colsample_bytree  # 列采样
-        self.subsample = subsample  # 行采样
+        self.colsample_bytree = colsample_bytree
+        self.subsample = subsample
         self.random_state = random_state
         self.trees = dict()
         self.feature_importances_ = dict()
 
     def fit(self, dataset, targets):
+        """模型训练入口"""
         targets = targets.to_frame(name='label')
 
         if self.random_state:
@@ -94,8 +103,8 @@ class RandomForestRegression(object):
             self.trees[stage] = tree
             print(tree.describe_tree())
 
-    # 递归建立决策树
     def _fit(self, dataset, targets, depth):
+        """递归建立决策树"""
         # 如果该节点的类别全都一样/样本小于分裂所需最小样本数量，则选取出现次数最多的类别。终止分裂
         if len(targets['label'].unique()) <= 1 or dataset.__len__() <= self.min_samples_split:
             tree = Tree()
@@ -130,8 +139,8 @@ class RandomForestRegression(object):
             tree.leaf_value = self.calc_leaf_value(targets['label'])
             return tree
 
-    # 选择最好的数据集划分方式，找到最优分裂特征、分裂阈值、分裂增益
     def choose_best_feature(self, dataset, targets):
+        """寻找最好的数据集划分方式，找到最优分裂特征、分裂阈值、分裂增益"""
         best_split_gain = float("inf")
         best_split_feature = None
         best_split_value = None
@@ -156,14 +165,14 @@ class RandomForestRegression(object):
                     best_split_gain = split_gain
         return best_split_feature, best_split_value, best_split_gain
 
-    # 选择所有样本的均值作为叶子节点取值
     @staticmethod
     def calc_leaf_value(targets):
+        """选择所有样本的均值作为叶子节点取值"""
         return targets.mean()
 
-    # 回归树采用平方误差来选择最优分裂点
     @staticmethod
     def calc_r2(left_targets, right_targets):
+        """回归树采用平方误差作为指标来选择最优分裂点"""
         r2 = 0
         for targets in [left_targets, right_targets]:
             mean = targets.mean()
@@ -171,22 +180,22 @@ class RandomForestRegression(object):
                 r2 += (dt - mean) ** 2
         return r2
 
-    # 根据特征和阈值将样本划分成左右两份，左边小于等于阈值，右边大于阈值
     @staticmethod
     def split_dataset(dataset, targets, split_feature, split_value):
+        """根据特征和阈值将样本划分成左右两份，左边小于等于阈值，右边大于阈值"""
         left_dataset = dataset[dataset[split_feature] <= split_value]
         left_targets = targets[dataset[split_feature] <= split_value]
         right_dataset = dataset[dataset[split_feature] > split_value]
         right_targets = targets[dataset[split_feature] > split_value]
         return left_dataset, right_dataset, left_targets, right_targets
 
-    # 输入样本，得到预测值
     def predict(self, dataset):
+        """输入样本，得到预测值"""
         res = []
-        for index, row in dataset.iterrows():
+        for _, row in dataset.iterrows():
             pred_list = []
             # 统计每棵树的预测结果，再求平均作为最终预测值
-            for stage, tree in self.trees.items():
+            for _, tree in self.trees.items():
                 pred_list.append(tree.calc_predict_value(row))
             res.append(sum(pred_list) * 1.0 / len(pred_list))
         return np.array(res)
@@ -196,11 +205,12 @@ if __name__ == '__main__':
     df = pd.read_csv("source/housing.txt").fillna(-1)
     df = df.rename(columns={'MEDV': 'label'})
     clf = RandomForestRegression(n_estimators=5,
-                                 max_depth=-1,
-                                 min_samples_split=20,
+                                 max_depth=5,
+                                 min_samples_split=50,
                                  min_samples_leaf=10,
+                                 min_split_gain=0.0,
                                  colsample_bytree="sqrt",
-                                 subsample=0.6,
+                                 subsample=0.8,
                                  random_state=66)
     train_count = int(0.7 * len(df))
     clf.fit(df.ix[:train_count, :-1], df.ix[:train_count, 'label'])

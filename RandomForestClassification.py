@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-@Env:Python2.7
+@Env: Python2.7
 @Time: 2019/10/24 13:31
 @Author: zhaoxingfeng
 @Function：Random Forest（RF），随机森林二分类
@@ -12,16 +12,11 @@ import pandas as pd
 import numpy as np
 import random
 import math
-pd.set_option('precision', 4)
-pd.set_option('display.max_rows', 50)
-pd.set_option('display.width', 1000)
-pd.set_option('display.max_columns', 1000)
-pd.set_option('expand_frame_repr', False)
 import collections
 
 
-# 定义一棵决策树
 class Tree(object):
+    """定义一棵决策树"""
     def __init__(self):
         self.split_feature = None
         self.split_value = None
@@ -29,8 +24,8 @@ class Tree(object):
         self.tree_left = None
         self.tree_right = None
 
-    # 通过递归决策树找到样本所属叶子节点
     def calc_predict_value(self, dataset):
+        """通过递归决策树找到样本所属叶子节点"""
         if self.leaf_value is not None:
             return self.leaf_value
         elif dataset[self.split_feature] <= self.split_value:
@@ -38,8 +33,8 @@ class Tree(object):
         else:
             return self.tree_right.calc_predict_value(dataset)
 
-    # 以json形式打印决策树，方便查看树结构
     def describe_tree(self):
+        """以json形式打印决策树，方便查看树结构"""
         if not self.tree_left and not self.tree_right:
             leaf_info = "{leaf_value:" + str(self.leaf_value) + "}"
             return leaf_info
@@ -54,19 +49,33 @@ class Tree(object):
 
 class RandomForestClassifier(object):
     def __init__(self, n_estimators=10, max_depth=-1, min_samples_split=2, min_samples_leaf=1,
-                 min_split_gain=0.0, colsample_bytree="sqrt", subsample=1.0, random_state=None):
+                 min_split_gain=0.0, colsample_bytree=None, subsample=0.8, random_state=None):
+        """
+        随机森林参数
+        ----------
+        n_estimators:      树数量
+        max_depth:         树深度，-1表示不限制深度
+        min_samples_split: 节点分裂所需的最小样本数量，小于该值节点终止分裂
+        min_samples_leaf:  叶子节点最少样本数量，小于该值叶子被合并
+        min_split_gain:    分裂所需的最小增益，小于该值节点终止分裂
+        colsample_bytree:  bagging列采样设置，可取[sqrt、log2]。sqrt表示随机选择sqrt(n_features)个特征，
+                           log2表示随机选择log(n_features)个特征，设置为其他则不进行列采样
+        subsample:         行采样比例
+        random_state:      随机种子，设置之后每次生成的n_estimators个样本集不会变，确保实验可重复
+        """
         self.n_estimators = n_estimators
         self.max_depth = max_depth if max_depth != -1 else float('inf')
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.min_split_gain = min_split_gain
-        self.colsample_bytree = colsample_bytree  # 列采样
-        self.subsample = subsample  # 行采样
+        self.colsample_bytree = colsample_bytree
+        self.subsample = subsample
         self.random_state = random_state
         self.trees = dict()
         self.feature_importances_ = dict()
 
     def fit(self, dataset, targets):
+        """模型训练入口"""
         assert targets.unique().__len__() == 2, "There must be two class for targets!"
         targets = targets.to_frame(name='label')
 
@@ -85,7 +94,7 @@ class RandomForestClassifier(object):
         for stage in range(self.n_estimators):
             print(("iter: "+str(stage+1)).center(80, '='))
 
-            # bagging方式随机选择样本和特征
+            # 随机选择行和列
             random.seed(random_state_stages[stage])
             subset_index = random.sample(range(len(dataset)), int(self.subsample * len(dataset)))
             subcol_index = random.sample(dataset.columns.tolist(), self.colsample_bytree)
@@ -96,8 +105,8 @@ class RandomForestClassifier(object):
             self.trees[stage] = tree
             print(tree.describe_tree())
 
-    # 递归建立决策树
     def _fit(self, dataset, targets, depth):
+        """递归建立决策树"""
         # 如果该节点的类别全都一样/样本小于分裂所需最小样本数量，则选取出现次数最多的类别。终止分裂
         if len(targets['label'].unique()) <= 1 or dataset.__len__() <= self.min_samples_split:
             tree = Tree()
@@ -132,8 +141,8 @@ class RandomForestClassifier(object):
             tree.leaf_value = self.calc_leaf_value(targets['label'])
             return tree
 
-    # 选择最好的数据集划分方式，找到最优分裂特征、分裂阈值、分裂增益
     def choose_best_feature(self, dataset, targets):
+        """寻找最好的数据集划分方式，找到最优分裂特征、分裂阈值、分裂增益"""
         best_split_gain = 1
         best_split_feature = None
         best_split_value = None
@@ -158,16 +167,16 @@ class RandomForestClassifier(object):
                     best_split_gain = split_gain
         return best_split_feature, best_split_value, best_split_gain
 
-    # 选择样本中出现次数最多的类别作为叶子节点取值
     @staticmethod
     def calc_leaf_value(targets):
+        """选择样本中出现次数最多的类别作为叶子节点取值"""
         label_counts = collections.Counter(targets)
         major_label = max(zip(label_counts.values(), label_counts.keys()))
         return major_label[1]
 
-    # 分类树采用基尼指数来选择最优分裂点
     @staticmethod
     def calc_gini(left_targets, right_targets):
+        """分类树采用基尼指数作为指标来选择最优分裂点"""
         split_gain = 0
         for targets in [left_targets, right_targets]:
             gini = 1
@@ -179,22 +188,22 @@ class RandomForestClassifier(object):
             split_gain += len(targets) * 1.0 / (len(left_targets) + len(right_targets)) * gini
         return split_gain
 
-    # 根据特征和阈值将样本划分成左右两份，左边小于等于阈值，右边大于阈值
     @staticmethod
     def split_dataset(dataset, targets, split_feature, split_value):
+        """根据特征和阈值将样本划分成左右两份，左边小于等于阈值，右边大于阈值"""
         left_dataset = dataset[dataset[split_feature] <= split_value]
         left_targets = targets[dataset[split_feature] <= split_value]
         right_dataset = dataset[dataset[split_feature] > split_value]
         right_targets = targets[dataset[split_feature] > split_value]
         return left_dataset, right_dataset, left_targets, right_targets
 
-    # 输入样本，预测所属类别
     def predict(self, dataset):
+        """输入样本，预测所属类别"""
         res = []
-        for index, row in dataset.iterrows():
+        for _, row in dataset.iterrows():
             pred_list = []
             # 统计每棵树的预测结果，选取出现次数最多的结果作为最终类别
-            for stage, tree in self.trees.items():
+            for _, tree in self.trees.items():
                 pred_list.append(tree.calc_predict_value(row))
 
             pred_label_counts = collections.Counter(pred_list)
@@ -210,6 +219,7 @@ if __name__ == '__main__':
                                  max_depth=5,
                                  min_samples_split=6,
                                  min_samples_leaf=2,
+                                 min_split_gain=0.0,
                                  colsample_bytree="sqrt",
                                  subsample=0.8,
                                  random_state=66)
