@@ -4,7 +4,7 @@
 @Time: 2019/10/24 13:31
 @Author: zhaoxingfeng
 @Function：Random Forest（RF），随机森林二分类
-@Version: V1.1
+@Version: V1.2
 参考文献：
 [1] UCI. wine[DB/OL].https://archive.ics.uci.edu/ml/machine-learning-databases/wine.
 """
@@ -13,6 +13,7 @@ import numpy as np
 import random
 import math
 import collections
+from sklearn.externals.joblib import Parallel, delayed
 
 
 class Tree(object):
@@ -58,7 +59,7 @@ class RandomForestClassifier(object):
         min_samples_split: 节点分裂所需的最小样本数量，小于该值节点终止分裂
         min_samples_leaf:  叶子节点最少样本数量，小于该值叶子被合并
         min_split_gain:    分裂所需的最小增益，小于该值节点终止分裂
-        colsample_bytree:  bagging列采样设置，可取[sqrt、log2]。sqrt表示随机选择sqrt(n_features)个特征，
+        colsample_bytree:  列采样设置，可取[sqrt、log2]。sqrt表示随机选择sqrt(n_features)个特征，
                            log2表示随机选择log(n_features)个特征，设置为其他则不进行列采样
         subsample:         行采样比例
         random_state:      随机种子，设置之后每次生成的n_estimators个样本集不会变，确保实验可重复
@@ -71,7 +72,7 @@ class RandomForestClassifier(object):
         self.colsample_bytree = colsample_bytree
         self.subsample = subsample
         self.random_state = random_state
-        self.trees = dict()
+        self.trees = None
         self.feature_importances_ = dict()
 
     def fit(self, dataset, targets):
@@ -91,21 +92,25 @@ class RandomForestClassifier(object):
         else:
             self.colsample_bytree = len(dataset.columns)
 
-        for stage in range(self.n_estimators):
-            print(("iter: "+str(stage+1)).center(80, '='))
+        # 并行建立多棵决策树
+        self.trees = Parallel(n_jobs=-1, verbose=0, backend="threading")(
+            delayed(self._parallel_build_trees)(dataset, targets, random_state)
+                for random_state in random_state_stages)
+        
+    def _parallel_build_trees(self, dataset, targets, random_state):
+        """bootstrap有放回抽样生成训练样本集，建立决策树"""
+        subcol_index = random.sample(dataset.columns.tolist(), self.colsample_bytree)
+        dataset_stage = dataset.sample(n=int(self.subsample * len(dataset)), replace=True, 
+                                        random_state=random_state).reset_index(drop=True)
+        dataset_stage = dataset_stage.loc[:, subcol_index]
+        targets_stage = targets.sample(n=int(self.subsample * len(dataset)), replace=True, 
+                                        random_state=random_state).reset_index(drop=True)
 
-            # 随机选择行和列
-            random.seed(random_state_stages[stage])
-            subset_index = random.sample(range(len(dataset)), int(self.subsample * len(dataset)))
-            subcol_index = random.sample(dataset.columns.tolist(), self.colsample_bytree)
-            dataset_copy = dataset.loc[subset_index, subcol_index].reset_index(drop=True)
-            targets_copy = targets.loc[subset_index, :].reset_index(drop=True)
+        tree = self._build_single_tree(dataset_stage, targets_stage, depth=0)
+        print(tree.describe_tree())
+        return tree
 
-            tree = self._fit(dataset_copy, targets_copy, depth=0)
-            self.trees[stage] = tree
-            print(tree.describe_tree())
-
-    def _fit(self, dataset, targets, depth):
+    def _build_single_tree(self, dataset, targets, depth):
         """递归建立决策树"""
         # 如果该节点的类别全都一样/样本小于分裂所需最小样本数量，则选取出现次数最多的类别。终止分裂
         if len(targets['label'].unique()) <= 1 or dataset.__len__() <= self.min_samples_split:
@@ -132,8 +137,8 @@ class RandomForestClassifier(object):
 
                 tree.split_feature = best_split_feature
                 tree.split_value = best_split_value
-                tree.tree_left = self._fit(left_dataset, left_targets, depth+1)
-                tree.tree_right = self._fit(right_dataset, right_targets, depth+1)
+                tree.tree_left = self._build_single_tree(left_dataset, left_targets, depth+1)
+                tree.tree_right = self._build_single_tree(right_dataset, right_targets, depth+1)
                 return tree
         # 如果树的深度超过预设值，则终止分裂
         else:
@@ -203,7 +208,7 @@ class RandomForestClassifier(object):
         for _, row in dataset.iterrows():
             pred_list = []
             # 统计每棵树的预测结果，选取出现次数最多的结果作为最终类别
-            for _, tree in self.trees.items():
+            for tree in self.trees:
                 pred_list.append(tree.calc_predict_value(row))
 
             pred_label_counts = collections.Counter(pred_list)
@@ -224,9 +229,11 @@ if __name__ == '__main__':
                                  subsample=0.8,
                                  random_state=66)
     train_count = int(0.7 * len(df))
-    clf.fit(df.ix[:train_count, :-1], df.ix[:train_count, 'label'])
+    feature_list = ["Alcohol", "Malic acid", "Ash", "Alcalinity of ash", "Magnesium", "Total phenols", 
+                    "Flavanoids", "Nonflavanoid phenols", "Proanthocyanins", "Color intensity", "Hue", 
+                    "OD280/OD315 of diluted wines", "Proline"]
+    clf.fit(df.loc[:train_count, feature_list], df.loc[:train_count, 'label'])
 
     from sklearn import metrics
-    print(metrics.accuracy_score(df.ix[:train_count, 'label'], clf.predict(df.ix[:train_count, :-1])))
-    print(metrics.accuracy_score(df.ix[train_count:, 'label'], clf.predict(df.ix[train_count:, :-1])))
-
+    print(metrics.accuracy_score(df.loc[:train_count, 'label'], clf.predict(df.loc[:train_count, feature_list])))
+    print(metrics.accuracy_score(df.loc[train_count:, 'label'], clf.predict(df.loc[train_count:, feature_list])))
